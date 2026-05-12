@@ -1,8 +1,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -270,7 +277,7 @@ func FetchRAGNeighbours(
 	embedInput string,
 	k int,
 ) ([]domain.RAGNeighbour, error) {
-	embedding, err := embedText(ctx, embedInput)
+	embedding, err := EmbedText(ctx, embedInput)
 	if err != nil {
 		return nil, fmt.Errorf("embed failed: %w", err)
 	}
@@ -361,15 +368,105 @@ func FetchReceipt(ctx context.Context, receiptID string) (*Receipt, error) {
 
 // embedText calls your embedding provider (e.g. OpenAI text-embedding-3-small
 // or a self-hosted model). Kept separate so it can be mocked in tests.
-func embedText(ctx context.Context, text string) ([]float32, error) {
-	// TODO: replace with real embedding API call
-	// Example using OpenAI:
-	//   resp, err := openaiClient.CreateEmbedding(ctx, text)
-	//   return resp.Embedding, err
-	//
-	// For now, return a zero vector so tests compile.
-	_ = text
-	return make([]float32, 1536), nil
+const embeddingDim = 1536
+
+var embeddingHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+type teiEmbedRequest struct {
+	Inputs string `json:"inputs"`
+}
+
+type teiEmbedResponse struct {
+	Vector  []float64
+	Vectors [][]float64
+}
+
+func (r *teiEmbedResponse) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return errors.New("empty response")
+	}
+	if b[0] == '[' {
+		var v []float64
+		if err := json.Unmarshal(b, &v); err == nil {
+			r.Vector = v
+			return nil
+		}
+		var vv [][]float64
+		if err := json.Unmarshal(b, &vv); err == nil {
+			r.Vectors = vv
+			return nil
+		}
+	}
+	return fmt.Errorf("unexpected TEI response: %s", string(b))
+}
+
+func EmbedText(ctx context.Context, text string) ([]float32, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, errors.New("embed: empty text")
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("EMBEDDINGS_URL"))
+	if endpoint == "" {
+		endpoint = "http://localhost:8082/embed"
+	}
+
+	payload, err := json.Marshal(teiEmbedRequest{Inputs: text})
+	if err != nil {
+		return nil, fmt.Errorf("embed: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("embed: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := embeddingHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("embed: read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("embed: TEI %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var decoded teiEmbedResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("embed: decode response: %w", err)
+	}
+
+	vec64 := decoded.Vector
+	if vec64 == nil && len(decoded.Vectors) > 0 {
+		vec64 = decoded.Vectors[0]
+	}
+	if len(vec64) == 0 {
+		return nil, errors.New("embed: empty embedding")
+	}
+
+	out := make([]float32, len(vec64))
+	for i, f := range vec64 {
+		out[i] = float32(f)
+	}
+	return fixEmbeddingDim(out, embeddingDim), nil
+}
+
+func fixEmbeddingDim(v []float32, dim int) []float32 {
+	if len(v) == dim {
+		return v
+	}
+	if len(v) > dim {
+		return v[:dim]
+	}
+	padded := make([]float32, dim)
+	copy(padded, v)
+	return padded
 }
 
 // ── Nightly learning loop helpers ─────────────────────────────────────────

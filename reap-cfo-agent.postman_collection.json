@@ -1,0 +1,77 @@
+{
+  "info": {
+    "name": "reap-cfo-agent",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "tenantId", "value": "tenant_1" },
+    { "key": "txnId", "value": "txn_001" },
+    { "key": "accountantId", "value": "acct_123" },
+    { "key": "finalCode", "value": "6200" }
+  ],
+  "item": [
+    {
+      "name": "POST /ingest",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/ingest",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"evt_001\",\n  \"event_type\": \"transaction.created\",\n  \"event_time\": \"2026-05-11T00:00:00Z\",\n  \"transaction\": {\n    \"transaction_id\": \"{{txnId}}\",\n    \"tenant_id\": \"{{tenantId}}\",\n    \"source\": \"reap_card\",\n    \"status\": \"NEW\",\n    \"merchant_name\": \"Amazon Web Services\",\n    \"merchant_normalized_name\": \"amazon web services\",\n    \"mcc\": \"7372\",\n    \"mcc_description\": \"Computer programming / data processing\",\n    \"amount\": 12.34,\n    \"currency\": \"USD\",\n    \"billing_amount\": 12.34,\n    \"billing_currency\": \"USD\",\n    \"fx_rate\": 1,\n    \"transaction_date\": \"2026-05-11\",\n    \"posted_at\": \"2026-05-11T00:00:00Z\",\n    \"card_last4\": \"1234\",\n    \"description\": \"AWS monthly subscription\",\n    \"receipt_id\": \"\",\n    \"receipt_status\": \"unmatched\"\n  }\n}" 
+        }
+      }
+    },
+    {
+      "name": "GET /queue/:tenant_id",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/queue/{{tenantId}}"
+      }
+    },
+    {
+      "name": "POST /review (ACCEPTED)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/review",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"action\": \"ACCEPTED\",\n  \"accountant_id\": \"{{accountantId}}\"\n}" 
+        }
+      }
+    },
+    {
+      "name": "POST /review (OVERRIDDEN)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/review",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"action\": \"OVERRIDDEN\",\n  \"final_code\": \"{{finalCode}}\",\n  \"accountant_id\": \"{{accountantId}}\"\n}" 
+        }
+      }
+    },
+    {
+      "name": "POST /review (FLAGGED)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/review",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"action\": \"FLAGGED\",\n  \"accountant_id\": \"{{accountantId}}\"\n}" 
+        }
+      }
+    },
+    {
+      "name": "POST /learning-loop/:tenant_id",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/learning-loop/{{tenantId}}"
+      }
+    }
+  ]
+}

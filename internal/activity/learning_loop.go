@@ -9,10 +9,6 @@ import (
 	"github.com/reap/cfo-agent/internal/store"
 )
 
-func embedText(ctx context.Context, desc string) ([]float32, error) {
-	return nil, nil
-}
-
 // RunLearningLoop is the nightly idempotent batch job.
 // It is triggered by a cron (e.g. Cloud Scheduler) and runs per tenant.
 //
@@ -54,7 +50,7 @@ func RunLearningLoop(ctx context.Context, tenantID string) error {
 		// Embed the transaction text
 		// In production this calls your embedding API.
 		// Kept as a store-layer function so it can be mocked in tests.
-		embedding, err := embedText(ctx, txnDesc)
+		embedding, err := store.EmbedText(ctx, txnDesc)
 		if err != nil {
 			logger.Warn("embed failed, skipping", "txn_id", event.TransactionID, "error", err)
 			continue
