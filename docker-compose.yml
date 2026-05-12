@@ -57,6 +57,39 @@ services:
     ports:
       - "8081:8080"
 
+  llm-model:
+    image: alpine:3.20
+    volumes:
+      - llm_models:/models
+    command:
+      - sh
+      - -lc
+      - |
+        apk add --no-cache curl ca-certificates;
+        test -f /models/smollm2-1.7b-instruct-q4_k_m.gguf || \
+          curl -L -o /models/smollm2-1.7b-instruct-q4_k_m.gguf \
+            https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf;
+    restart: "no"
+
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    depends_on:
+      llm-model:
+        condition: service_completed_successfully
+    volumes:
+      - llm_models:/models
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-m"
+      - "/models/smollm2-1.7b-instruct-q4_k_m.gguf"
+      - "-c"
+      - "4096"
+    ports:
+      - "8083:8080"
+
   embeddings:
     platform: linux/amd64
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
@@ -81,9 +114,8 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       SERVER_PORT: ":8080"
       APP_MODE: ${APP_MODE:-test}
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_BASE_URL: ${HF_BASE_URL:-https://router.huggingface.co/v1}
-      HF_LLM_MODEL: ${HF_LLM_MODEL:-HuggingFaceTB/SmolLM2-1.7B-Instruct:hf-inference}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://llm:8080/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-smollm2}
       EMBEDDINGS_URL: http://embeddings:80/embed
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     command: ["go", "run", "./cmd/api"]
@@ -105,9 +137,8 @@ services:
       POSTGRES_DSN: postgres://reap:reap@db:5432/cfo_agent?sslmode=disable
       TEMPORAL_ADDRESS: temporal:7233
       APP_MODE: ${APP_MODE:-test}
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_BASE_URL: ${HF_BASE_URL:-https://router.huggingface.co/v1}
-      HF_LLM_MODEL: ${HF_LLM_MODEL:-HuggingFaceTB/SmolLM2-1.7B-Instruct:hf-inference}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://llm:8080/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-smollm2}
       EMBEDDINGS_URL: http://embeddings:80/embed
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     command: ["go", "run", "./cmd/worker"]
@@ -117,3 +148,4 @@ volumes:
   cfo_db_data:
   temporal_db_data:
   hf_model_cache:
+  llm_models:

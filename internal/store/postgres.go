@@ -34,6 +34,53 @@ func Init(ctx context.Context, dsn string) error {
 
 // ── Transaction state ──────────────────────────────────────────────────────
 
+func UpsertTransaction(ctx context.Context, txn domain.Transaction) error {
+	transactionDate, err := time.Parse("2006-01-02", txn.TransactionDate)
+	if err != nil {
+		return fmt.Errorf("invalid transaction_date %q: %w", txn.TransactionDate, err)
+	}
+
+	var postedAt any
+	if !txn.PostedAt.IsZero() {
+		postedAt = txn.PostedAt
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO transactions (
+			transaction_id, tenant_id, source, merchant_name, merchant_normalized_name,
+			mcc, mcc_description, amount, currency, billing_amount, billing_currency,
+			fx_rate, transaction_date, posted_at, card_last4, description, receipt_id, receipt_status
+		) VALUES (
+			$1,$2,$3,$4,$5,
+			$6,$7,$8,$9,$10,$11,
+			$12,$13,$14,$15,$16,$17,$18
+		)
+		ON CONFLICT (transaction_id) DO UPDATE SET
+			tenant_id = EXCLUDED.tenant_id,
+			source = EXCLUDED.source,
+			merchant_name = EXCLUDED.merchant_name,
+			merchant_normalized_name = EXCLUDED.merchant_normalized_name,
+			mcc = EXCLUDED.mcc,
+			mcc_description = EXCLUDED.mcc_description,
+			amount = EXCLUDED.amount,
+			currency = EXCLUDED.currency,
+			billing_amount = EXCLUDED.billing_amount,
+			billing_currency = EXCLUDED.billing_currency,
+			fx_rate = EXCLUDED.fx_rate,
+			transaction_date = EXCLUDED.transaction_date,
+			posted_at = EXCLUDED.posted_at,
+			card_last4 = EXCLUDED.card_last4,
+			description = EXCLUDED.description,
+			receipt_id = EXCLUDED.receipt_id,
+			receipt_status = EXCLUDED.receipt_status
+	`,
+		txn.TransactionID, txn.TenantID, txn.Source, txn.MerchantName, txn.MerchantNormalizedName,
+		txn.MCC, txn.MCCDescription, txn.Amount, txn.Currency, txn.BillingAmount, txn.BillingCurrency,
+		txn.FXRate, transactionDate, postedAt, txn.CardLast4, txn.Description, txn.ReceiptID, txn.ReceiptStatus,
+	)
+	return err
+}
+
 // SetTxnStatus is an append-only upsert — we write to tagging table
 // and append a row to status_history for the audit trail.
 func SetTxnStatus(ctx context.Context, txnID string, status domain.TxnStatus) error {
@@ -176,6 +223,15 @@ func WriteReviewQueueItem(ctx context.Context, item domain.ReviewQueueItem) erro
 	return err
 }
 
+func UpdateReviewQueueStatus(ctx context.Context, txnID string, status string) error {
+	_, err := pool.Exec(ctx, `
+		UPDATE review_queue
+		SET status = $2
+		WHERE transaction_id = $1
+	`, txnID, status)
+	return err
+}
+
 func FetchReviewQueue(ctx context.Context, tenantID string) ([]domain.ReviewQueueItem, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT transaction_id, tenant_id, merchant_name, amount, currency,
@@ -206,6 +262,85 @@ func FetchReviewQueue(ctx context.Context, tenantID string) ([]domain.ReviewQueu
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+func FetchWorklist(ctx context.Context, tenantID string, limit int) ([]domain.TxnListItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT
+			t.transaction_id,
+			t.tenant_id,
+			t.merchant_name,
+			t.amount,
+			t.currency,
+			t.transaction_date,
+			COALESCE(tg.status, rq.status) AS status,
+			rq.status AS route,
+			'' AS tag,
+			COALESCE(rq.suggested_code, ''),
+			COALESCE(rq.suggested_label, ''),
+			COALESCE(rq.confidence, 0),
+			COALESCE(rq.rationale, ''),
+			COALESCE(rq.queued_at, tg.updated_at) AS updated_at
+		FROM transactions t
+		LEFT JOIN tagging tg ON tg.transaction_id = t.transaction_id
+		JOIN review_queue rq ON rq.transaction_id = t.transaction_id
+		WHERE t.tenant_id = $1
+		  AND rq.status IN ('IN_REVIEW', 'ESCALATED')
+
+		UNION ALL
+
+		SELECT
+			t.transaction_id,
+			t.tenant_id,
+			t.merchant_name,
+			t.amount,
+			t.currency,
+			t.transaction_date,
+			tg.status,
+			CASE WHEN rq.status = 'RESOLVED' THEN 'MANUAL_REVIEW' ELSE 'AUTO_TAGGED' END AS route,
+			CASE WHEN rq.status = 'RESOLVED' THEN 'Moved From Review' ELSE 'Auto Tagged' END AS tag,
+			COALESCE(rq.suggested_code, ''),
+			COALESCE(rq.suggested_label, ''),
+			COALESCE(rq.confidence, 0),
+			COALESCE(rq.rationale, ''),
+			COALESCE(tg.updated_at, rq.queued_at) AS updated_at
+		FROM transactions t
+		JOIN tagging tg ON tg.transaction_id = t.transaction_id
+		LEFT JOIN review_queue rq ON rq.transaction_id = t.transaction_id
+		WHERE t.tenant_id = $1
+		  AND tg.status = 'SUCCESS'
+		  AND (rq.transaction_id IS NULL OR rq.status = 'RESOLVED')
+
+		ORDER BY updated_at DESC
+		LIMIT $2
+	`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.TxnListItem
+	for rows.Next() {
+		var item domain.TxnListItem
+		var statusStr string
+		var transactionDate time.Time
+		if err := rows.Scan(
+			&item.TransactionID, &item.TenantID, &item.MerchantName,
+			&item.Amount, &item.Currency, &transactionDate,
+			&statusStr, &item.Route, &item.Tag, &item.SuggestedCode,
+			&item.SuggestedLabel, &item.Confidence, &item.Rationale,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.TransactionDate = transactionDate.Format("2006-01-02")
+		item.Status = domain.TxnStatus(statusStr)
+		out = append(out, item)
+	}
+	return out, nil
 }
 
 // ── Correction events ─────────────────────────────────────────────────────

@@ -81,7 +81,7 @@ func TaggingWorkflow(ctx workflow.Context, input TaggingWorkflowInput) (*Tagging
 	if err := workflow.ExecuteActivity(enrichCtx, activity.EnrichTransaction,
 		txn).Get(enrichCtx, &enriched); err != nil {
 		// Enrichment failed after retries — escalate, do not drop
-		return escalate(ctx, txn.TransactionID, "enrichment_failed")
+		return escalate(ctx, txn, "enrichment_failed")
 	}
 
 	// ── 4. Tagging ────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ func TaggingWorkflow(ctx workflow.Context, input TaggingWorkflowInput) (*Tagging
 		return routeToReview(ctx, txn, result)
 
 	default:
-		return escalate(ctx, txn.TransactionID, "low_confidence")
+		return escalate(ctx, txn, "low_confidence")
 	}
 }
 
@@ -167,12 +167,19 @@ func autoApprove(ctx workflow.Context, txnID string, result domain.TaggingResult
 // restarts, the wait resumes exactly where it left off.
 
 type ReviewSignal struct {
-	Action      domain.CorrectionAction
-	FinalCode   string
+	Action       domain.CorrectionAction
+	FinalCode    string
 	AccountantID string
 }
 
 const SignalReviewAction = "review-action"
+
+type EscalationSignal struct {
+	FinalCode    string
+	AccountantID string
+}
+
+const SignalEscalationAction = "escalation-action"
 
 func routeToReview(ctx workflow.Context, txn domain.Transaction, result domain.TaggingResult) (*TaggingWorkflowResult, error) {
 	logger := workflow.GetLogger(ctx)
@@ -226,8 +233,23 @@ func routeToReview(ctx workflow.Context, txn domain.Transaction, result domain.T
 		logger.Warn("failed to write correction event", "error", err)
 	}
 
+	queueStatus := "RESOLVED"
+	if sig.Action == domain.ActionDenied {
+		queueStatus = "ESCALATED"
+	} else if sig.Action == domain.ActionFlagged {
+		queueStatus = "FLAGGED"
+	}
+	queueCtx := withShortTimeout(ctx, 5*time.Second)
+	if err := workflow.ExecuteActivity(queueCtx, activity.UpdateReviewQueueStatus,
+		txn.TransactionID, queueStatus).Get(queueCtx, nil); err != nil {
+		logger.Warn("failed to update review queue status", "txn_id", txn.TransactionID, "error", err)
+	}
+
+	if sig.Action == domain.ActionDenied {
+		return escalate(ctx, txn, "accountant_denied")
+	}
 	if sig.Action == domain.ActionFlagged {
-		return escalate(ctx, txn.TransactionID, "accountant_flagged")
+		return escalate(ctx, txn, "accountant_flagged")
 	}
 
 	// Promote vendor rule if override threshold hit
@@ -257,17 +279,70 @@ func routeToReview(ctx workflow.Context, txn domain.Transaction, result domain.T
 
 // ── Route: ESCALATED ──────────────────────────────────────────────────────
 
-func escalate(ctx workflow.Context, txnID string, reason string) (*TaggingWorkflowResult, error) {
+func escalate(ctx workflow.Context, txn domain.Transaction, reason string) (*TaggingWorkflowResult, error) {
 	logger := workflow.GetLogger(ctx)
-	logger.Warn("escalating transaction", "txn_id", txnID, "reason", reason)
+	logger.Warn("escalating transaction", "txn_id", txn.TransactionID, "reason", reason)
 
 	stateCtx := withShortTimeout(ctx, 5*time.Second)
-	workflow.ExecuteActivity(stateCtx, activity.SetTxnStatus,
-		txnID, domain.StatusEscalated).Get(stateCtx, nil)
+	if err := workflow.ExecuteActivity(stateCtx, activity.SetTxnStatus,
+		txn.TransactionID, domain.StatusEscalated).Get(stateCtx, nil); err != nil {
+		return nil, err
+	}
+
+	queueCtx := withShortTimeout(ctx, 5*time.Second)
+	if err := workflow.ExecuteActivity(queueCtx, activity.WriteEscalationQueueItem,
+		txn, reason).Get(queueCtx, nil); err != nil {
+		logger.Warn("failed to write escalated queue item", "txn_id", txn.TransactionID, "error", err)
+	}
+
+	deadline := workflow.NewTimer(ctx, 30*24*time.Hour)
+	signalCh := workflow.GetSignalChannel(ctx, SignalEscalationAction)
+
+	var sig EscalationSignal
+	selector := workflow.NewSelector(ctx)
+	selector.AddReceive(signalCh, func(c workflow.ReceiveChannel, _ bool) {
+		c.Receive(ctx, &sig)
+	})
+	selector.AddFuture(deadline, func(_ workflow.Future) {
+		sig = EscalationSignal{}
+	})
+	selector.Select(ctx)
+
+	if sig.FinalCode == "" {
+		return &TaggingWorkflowResult{
+			TransactionID: txn.TransactionID,
+			FinalStatus:   domain.StatusEscalated,
+		}, nil
+	}
+
+	corrCtx := withShortTimeout(ctx, 5*time.Second)
+	if err := workflow.ExecuteActivity(corrCtx, activity.WriteCorrectionEvent,
+		domain.CorrectionEvent{
+			TransactionID: txn.TransactionID,
+			TenantID:      txn.TenantID,
+			Action:        domain.ActionOverridden,
+			SuggestedCode: "",
+			FinalCode:     sig.FinalCode,
+			AccountantID:  sig.AccountantID,
+		}).Get(corrCtx, nil); err != nil {
+		logger.Warn("failed to write correction event", "error", err)
+	}
+
+	resolvedCtx := withShortTimeout(ctx, 5*time.Second)
+	if err := workflow.ExecuteActivity(resolvedCtx, activity.UpdateReviewQueueStatus,
+		txn.TransactionID, "RESOLVED").Get(resolvedCtx, nil); err != nil {
+		logger.Warn("failed to update escalated queue status", "txn_id", txn.TransactionID, "error", err)
+	}
+
+	if err := workflow.ExecuteActivity(stateCtx, activity.SetTxnStatus,
+		txn.TransactionID, domain.StatusSuccess).Get(stateCtx, nil); err != nil {
+		return nil, err
+	}
 
 	return &TaggingWorkflowResult{
-		TransactionID: txnID,
-		FinalStatus:   domain.StatusEscalated,
+		TransactionID: txn.TransactionID,
+		FinalStatus:   domain.StatusSuccess,
+		CoACode:       sig.FinalCode,
 	}, nil
 }
 

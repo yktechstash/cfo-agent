@@ -37,7 +37,7 @@ func Complete(ctx context.Context, prompt string) (string, error) {
 func newProvider(cfg *config.Config) Provider {
 	mode := strings.ToLower(strings.TrimSpace(cfg.AppMode))
 	if mode == "test" {
-		return newHuggingFaceProvider(cfg)
+		return newLocalOpenAIProvider(cfg)
 	}
 	return newAnthropicProvider(cfg)
 }
@@ -84,56 +84,51 @@ func (p *anthropicProvider) Complete(ctx context.Context, prompt string) (string
 	return "", fmt.Errorf("no text block in anthropic response")
 }
 
-type huggingFaceProvider struct {
+type localOpenAIProvider struct {
 	baseURL string
-	token   string
 	model   string
 	client  *http.Client
 }
 
-func newHuggingFaceProvider(cfg *config.Config) Provider {
-	baseURL := strings.TrimSpace(cfg.HuggingFaceBaseURL)
+func newLocalOpenAIProvider(cfg *config.Config) Provider {
+	baseURL := strings.TrimSpace(cfg.LocalLLMBaseURL)
 	if baseURL == "" {
-		baseURL = "https://router.huggingface.co/v1"
+		baseURL = "http://llm:8080/v1"
 	}
-	model := strings.TrimSpace(cfg.HuggingFaceModel)
+	model := strings.TrimSpace(cfg.LocalLLMModel)
 	if model == "" {
-		model = "HuggingFaceTB/SmolLM2-1.7B-Instruct:hf-inference"
+		model = "smollm2"
 	}
-	return &huggingFaceProvider{
+	return &localOpenAIProvider{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   strings.TrimSpace(cfg.HuggingFaceToken),
 		model:   model,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
-type hfChatMessage struct {
+type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type hfChatCompletionRequest struct {
-	Model       string          `json:"model"`
-	Messages    []hfChatMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
+type chatCompletionRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Temperature float64       `json:"temperature,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
 }
 
-type hfChatCompletionResponse struct {
+type chatCompletionResponse struct {
 	Choices []struct {
-		Message hfChatMessage `json:"message"`
+		Message chatMessage `json:"message"`
 	} `json:"choices"`
 }
 
-func (p *huggingFaceProvider) Complete(ctx context.Context, prompt string) (string, error) {
-	if p.token == "" {
-		return "", fmt.Errorf("missing HF_TOKEN")
-	}
-
-	reqBody, err := json.Marshal(hfChatCompletionRequest{
+func (p *localOpenAIProvider) Complete(ctx context.Context, prompt string) (string, error) {
+	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model: p.model,
-		Messages: []hfChatMessage{
+		Messages: []chatMessage{
 			{
 				Role: "system",
 				Content: "You are a financial transaction tagger. " +
@@ -144,43 +139,43 @@ func (p *huggingFaceProvider) Complete(ctx context.Context, prompt string) (stri
 		},
 		MaxTokens:   256,
 		Temperature: 0,
+		Stream:      false,
 	})
 	if err != nil {
-		return "", fmt.Errorf("hf request encode: %w", err)
+		return "", fmt.Errorf("local llm request encode: %w", err)
 	}
 
 	endpoint := p.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("hf request create: %w", err)
+		return "", fmt.Errorf("local llm request create: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.token)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("hf request failed: %w", err)
+		return "", fmt.Errorf("local llm request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return "", fmt.Errorf("hf read response: %w", err)
+		return "", fmt.Errorf("local llm read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("hf error %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("local llm error %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
-	var parsed hfChatCompletionResponse
+	var parsed chatCompletionResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("hf decode response: %w", err)
+		return "", fmt.Errorf("local llm decode response: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
-		return "", errors.New("hf returned no choices")
+		return "", errors.New("local llm returned no choices")
 	}
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	if content == "" {
-		return "", errors.New("hf returned empty content")
+		return "", errors.New("local llm returned empty content")
 	}
 	return content, nil
 }

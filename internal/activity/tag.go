@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/reap/cfo-agent/internal/domain"
@@ -41,17 +42,23 @@ func TagTransaction(ctx context.Context, ec domain.EnrichedContext) (domain.Tagg
 	if err != nil {
 		return domain.TaggingResult{}, fmt.Errorf("llm call failed: %w", err)
 	}
+	log.Printf("[tag] llm raw response txn_id=%s body=%s", txn.TransactionID, raw)
 
 	// ── Parse structured output ───────────────────────────────────────────
 	result, err := parseAndValidate(raw, ec)
 	if err != nil {
 		// First parse failure — retry with a stricter prompt that enumerates codes
+		log.Printf("[tag] first parse failed txn_id=%s err=%v", txn.TransactionID, err)
 		strictPrompt := buildStrictPrompt(ec)
 		raw2, err2 := llm.Complete(ctx, strictPrompt)
 		if err2 != nil {
 			return domain.TaggingResult{}, fmt.Errorf("llm retry failed: %w", err2)
 		}
+		log.Printf("[tag] llm strict raw response txn_id=%s body=%s", txn.TransactionID, raw2)
 		result, err = parseAndValidate(raw2, ec)
+		if err == nil {
+			log.Printf("[tag] parsed strict result txn_id=%s coa_code=%s confidence=%.3f", txn.TransactionID, result.CoACode, result.Confidence)
+		}
 		if err != nil {
 			return domain.TaggingResult{}, fmt.Errorf("llm output invalid after retry: %w", err)
 		}
@@ -62,6 +69,7 @@ func TagTransaction(ctx context.Context, ec domain.EnrichedContext) (domain.Tagg
 		source = "cold_start"
 	}
 	result.Source = source
+	log.Printf("[tag] parsed result txn_id=%s coa_code=%s confidence=%.3f source=%s", txn.TransactionID, result.CoACode, result.Confidence, result.Source)
 
 	return result, nil
 }
@@ -138,9 +146,9 @@ func buildStrictPrompt(ec domain.EnrichedContext) string {
 // ── Output parser + validator ──────────────────────────────────────────────
 
 type llmOutput struct {
-	CoACode    string  `json:"coa_code"`
-	Confidence float64 `json:"confidence"`
-	Rationale  string  `json:"rationale"`
+	CoACode    string   `json:"coa_code"`
+	Confidence *float64 `json:"confidence"`
+	Rationale  string   `json:"rationale"`
 }
 
 func parseAndValidate(raw string, ec domain.EnrichedContext) (domain.TaggingResult, error) {
@@ -155,18 +163,25 @@ func parseAndValidate(raw string, ec domain.EnrichedContext) (domain.TaggingResu
 		return domain.TaggingResult{}, fmt.Errorf("json parse failed: %w", err)
 	}
 
+	if out.Confidence == nil {
+		return domain.TaggingResult{}, fmt.Errorf("missing confidence field")
+	}
+	if strings.TrimSpace(out.Rationale) == "" {
+		return domain.TaggingResult{}, fmt.Errorf("missing rationale field")
+	}
+
 	// Hard validation: code must be in the tenant's CoA
 	label := findLabel(ec.CoAEntries, out.CoACode)
 	if label == "" {
 		return domain.TaggingResult{}, fmt.Errorf("coa_code %q not in tenant CoA", out.CoACode)
 	}
 
-	// Clamp confidence to valid range
-	if out.Confidence < 0 {
-		out.Confidence = 0
+	confidence := *out.Confidence
+	if confidence < 0 {
+		confidence = 0
 	}
-	if out.Confidence > 1 {
-		out.Confidence = 1
+	if confidence > 1 {
+		confidence = 1
 	}
 
 	// Truncate rationale to 25 words
@@ -177,7 +192,7 @@ func parseAndValidate(raw string, ec domain.EnrichedContext) (domain.TaggingResu
 		TenantID:      ec.Txn.TenantID,
 		CoACode:       out.CoACode,
 		CoALabel:      label,
-		Confidence:    out.Confidence,
+		Confidence:    confidence,
 		Rationale:     rationale,
 	}, nil
 }

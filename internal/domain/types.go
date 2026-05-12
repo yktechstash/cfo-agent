@@ -81,9 +81,10 @@ type TaggingResult struct {
 type CorrectionAction string
 
 const (
-	ActionAccepted  CorrectionAction = "ACCEPTED"
+	ActionAccepted   CorrectionAction = "ACCEPTED"
 	ActionOverridden CorrectionAction = "OVERRIDDEN"
-	ActionFlagged   CorrectionAction = "FLAGGED"
+	ActionDenied     CorrectionAction = "DENIED"
+	ActionFlagged    CorrectionAction = "FLAGGED"
 )
 
 // CorrectionEvent is written every time an accountant acts on a queued transaction.
@@ -130,18 +131,35 @@ type ConfidenceThreshold struct {
 
 // ReviewQueueItem is what the accountant UI fetches for a single transaction.
 type ReviewQueueItem struct {
-	TransactionID   string         `json:"transaction_id"`
-	TenantID        string         `json:"tenant_id"`
-	MerchantName    string         `json:"merchant_name"`
-	Amount          float64        `json:"amount"`
-	Currency        string         `json:"currency"`
-	Date            string         `json:"date"`
-	ContextTags     []string       `json:"context_tags"`
-	SuggestedCode   string         `json:"suggested_code"`
-	SuggestedLabel  string         `json:"suggested_label"`
-	Confidence      float64        `json:"confidence"`
-	Rationale       string         `json:"rationale"`
-	CoAOptions      []CoAEntry     `json:"coa_options"`
-	Status          TxnStatus      `json:"status"`
-	QueuedAt        time.Time      `json:"queued_at"`
+	TransactionID   string     `json:"transaction_id"`
+	TenantID        string     `json:"tenant_id"`
+	MerchantName    string     `json:"merchant_name"`
+	Amount          float64    `json:"amount"`
+	Currency        string     `json:"currency"`
+	Date            string     `json:"date"`
+	ContextTags     []string   `json:"context_tags"`
+	SuggestedCode   string     `json:"suggested_code"`
+	SuggestedLabel  string     `json:"suggested_label"`
+	Confidence      float64    `json:"confidence"`
+	Rationale       string     `json:"rationale"`
+	CoAOptions      []CoAEntry `json:"coa_options"`
+	Status          TxnStatus  `json:"status"`
+	QueuedAt        time.Time  `json:"queued_at"`
+}
+
+type TxnListItem struct {
+	TransactionID   string    `json:"transaction_id"`
+	TenantID        string    `json:"tenant_id"`
+	MerchantName    string    `json:"merchant_name"`
+	Amount          float64   `json:"amount"`
+	Currency        string    `json:"currency"`
+	TransactionDate string    `json:"transaction_date"`
+	Status          TxnStatus `json:"status"`
+	Route           string    `json:"route"`
+	Tag             string    `json:"tag"`
+	SuggestedCode   string    `json:"suggested_code"`
+	SuggestedLabel  string    `json:"suggested_label"`
+	Confidence      float64   `json:"confidence"`
+	Rationale       string    `json:"rationale"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }

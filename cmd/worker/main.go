@@ -56,6 +56,8 @@ func main() {
 	w.RegisterActivity(activity.EnrichTransaction)
 	w.RegisterActivity(activity.TagTransaction)
 	w.RegisterActivity(activity.WriteReviewQueueItem)
+	w.RegisterActivity(activity.WriteEscalationQueueItem)
+	w.RegisterActivity(activity.UpdateReviewQueueStatus)
 	w.RegisterActivity(activity.WriteCorrectionEvent)
 	w.RegisterActivity(activity.MaybePromoteVendorRule)
 

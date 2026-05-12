@@ -2,6 +2,40 @@
 
 Go implementation of Workflow 1 from the Reap CFO Agent take-home.
 
+## Product walkthrough
+
+System design:
+
+![Design](resources/design.png)
+
+Current UI:
+
+![UI](resources/ui.png)
+
+Typical flows:
+
+- Manual review denied to escalated queue:
+
+![Manual Review Deny](resources/manual_review_deny.gif)
+
+- Manual review resolved and later reflected in completed flow:
+
+![Manual Review Followed By Auto Tag](resources/manual_review_followed_by_auto_tag.gif)
+
+- Escalated resolution flow:
+
+![Escalated Resolution](resources/escaled_resolution.gif)
+
+- Learning loop refresh:
+
+![Learning Loop](resources/leaning_loop.gif)
+
+Confidence examples:
+
+![Auto Tagged Confidence](resources/auto_tagged_confidence.png)
+
+![Confidence For Auto Tag](resources/confidence_for_autotag.png)
+
 ## Architecture decisions
 
 ### Why Temporal (not a Postgres state machine)
@@ -68,45 +102,29 @@ migrations/
 ## Running locally
 
 ### Prerequisites
-- Go 1.22+
-- Docker (for Temporal + Postgres)
-- Anthropic API key
+- Docker / Docker Compose
+- Go 1.22+ if you want to run binaries outside Compose
 
-### Start dependencies
+### Start the stack
 
 ```bash
-# Temporal (includes its own Postgres)
-docker run --rm -d -p 7233:7233 temporalio/auto-setup:1.24
-
-# Postgres with pgvector
-docker run --rm -d \
-  -e POSTGRES_USER=reap \
-  -e POSTGRES_PASSWORD=reap \
-  -e POSTGRES_DB=cfo_agent \
-  -p 5432:5432 \
-  pgvector/pgvector:pg16
+docker compose up -d
 ```
 
-### Run migrations
+The local stack includes:
+- `db` for application data
+- `temporal-db`, `temporal`, `temporal-ui`
+- `api` on `http://localhost:8080`
+- `worker`
+- local model / embeddings services if configured in Compose
+
+Temporal UI is available at `http://localhost:8081`.
+
+### Restart after code changes
 
 ```bash
-psql "postgres://reap:reap@localhost:5432/cfo_agent?sslmode=disable" \
-  -f migrations/001_initial_schema.sql
-```
-
-### Start the worker
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export POSTGRES_DSN="postgres://reap:reap@localhost:5432/cfo_agent?sslmode=disable"
-
-go run ./cmd/worker
-```
-
-### Start the API server
-
-```bash
-go run ./cmd/api
+docker compose rm -sf api worker
+docker compose up -d api worker
 ```
 
 ### Reset DB + seed 10 test transactions
@@ -195,9 +213,9 @@ COMMIT;
 " 
 ```
 
-### Test with a sample transaction
+### Test end-to-end
 
-Start a workflow by sending a transaction event. For quick testing, reuse one of the seeded IDs (e.g. `txn_001`) and `tenant_1`.
+Create a transaction event via the ingestion API. `/ingest` is the event boundary and should persist the raw transaction before workflow execution.
 
 ```bash
 curl -X POST http://localhost:8080/ingest \
@@ -210,7 +228,7 @@ curl -X POST http://localhost:8080/ingest \
       "transaction_id": "txn_001",
       "tenant_id": "tenant_1",
       "source": "reap_card",
-      "status": "settled",
+      "status": "NEW",
       "merchant_name": "Amazon Web Services",
       "merchant_normalized_name": "amazon web services",
       "mcc": "7372",
@@ -230,23 +248,22 @@ curl -X POST http://localhost:8080/ingest \
   }'
 ```
 
-### Poll the review queue
+Check the unified worklist API:
 
 ```bash
-curl http://localhost:8080/queue/tenant_acme_sg
+curl http://localhost:8080/worklist/tenant_1
 ```
 
-### Submit an accountant decision
+Open the built-in UI:
 
 ```bash
-curl -X POST http://localhost:8080/review \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transaction_id": "txn_card_001",
-    "tenant_id": "tenant_acme_sg",
-    "action": "ACCEPTED",
-    "accountant_id": "accountant_sarah"
-  }'
+open http://localhost:8080/ui/tenant_1
+```
+
+Trigger the learning loop manually:
+
+```bash
+curl -X POST http://localhost:8080/learning-loop/tenant_1
 ```
 
 ## What is NOT implemented (explicitly out of scope)

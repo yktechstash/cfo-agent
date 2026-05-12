@@ -43,6 +43,25 @@ func WriteReviewQueueItem(ctx context.Context, txn domain.Transaction, result do
 	return store.WriteReviewQueueItem(ctx, item)
 }
 
+func WriteEscalationQueueItem(ctx context.Context, txn domain.Transaction, reason string) error {
+	item := domain.ReviewQueueItem{
+		TransactionID: txn.TransactionID,
+		TenantID:      txn.TenantID,
+		MerchantName:  txn.MerchantName,
+		Amount:        txn.BillingAmount,
+		Currency:      txn.BillingCurrency,
+		Date:          txn.TransactionDate,
+		Rationale:     reason,
+		Status:        domain.StatusEscalated,
+		QueuedAt:      time.Now().UTC(),
+	}
+	return store.WriteReviewQueueItem(ctx, item)
+}
+
+func UpdateReviewQueueStatus(ctx context.Context, txnID string, status string) error {
+	return store.UpdateReviewQueueStatus(ctx, txnID, status)
+}
+
 // WriteCorrectionEvent persists the accountant's decision.
 // This is the primary input to the nightly learning loop.
 //

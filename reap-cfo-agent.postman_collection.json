@@ -24,10 +24,10 @@
       }
     },
     {
-      "name": "GET /queue/:tenant_id",
+      "name": "GET /worklist/:tenant_id",
       "request": {
         "method": "GET",
-        "url": "{{baseUrl}}/queue/{{tenantId}}"
+        "url": "{{baseUrl}}/worklist/{{tenantId}}"
       }
     },
     {
@@ -55,14 +55,26 @@
       }
     },
     {
-      "name": "POST /review (FLAGGED)",
+      "name": "POST /review (DENIED)",
       "request": {
         "method": "POST",
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "url": "{{baseUrl}}/review",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"action\": \"FLAGGED\",\n  \"accountant_id\": \"{{accountantId}}\"\n}" 
+          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"action\": \"DENIED\",\n  \"accountant_id\": \"{{accountantId}}\"\n}"
+        }
+      }
+    },
+    {
+      "name": "POST /escalated/review",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/escalated/review",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"transaction_id\": \"{{txnId}}\",\n  \"tenant_id\": \"{{tenantId}}\",\n  \"final_code\": \"{{finalCode}}\",\n  \"accountant_id\": \"{{accountantId}}\"\n}"
         }
       }
     },
