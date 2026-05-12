@@ -150,10 +150,21 @@ func FetchThresholds(ctx context.Context, tenantID string) (domain.ConfidenceThr
 		LIMIT 1
 	`, tenantID).Scan(&t.TenantID, &t.AutoApproveMin, &t.ReviewMin)
 	if err == pgx.ErrNoRows {
-		// Absolute fallback
 		return domain.ConfidenceThreshold{AutoApproveMin: 0.90, ReviewMin: 0.65}, nil
 	}
 	return t, err
+}
+
+func UpsertThresholds(ctx context.Context, tenantID string, autoApproveMin, reviewMin float64) error {
+	_, err := pool.Exec(ctx, `
+		INSERT INTO confidence_thresholds (tenant_id, auto_approve_min, review_min, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (tenant_id) DO UPDATE
+		SET auto_approve_min = EXCLUDED.auto_approve_min,
+		    review_min = EXCLUDED.review_min,
+		    updated_at = EXCLUDED.updated_at
+	`, tenantID, autoApproveMin, reviewMin)
+	return err
 }
 
 // ── Vendor rules ──────────────────────────────────────────────────────────

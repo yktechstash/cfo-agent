@@ -30,6 +30,7 @@ func New(temporalClient client.Client) *Server {
 	r.GET("/worklist/:tenant_id", s.handleGetWorklist)
 	r.POST("/review", s.handleReview)
 	r.POST("/escalated/review", s.handleEscalatedReview)
+	r.PUT("/confidence-thresholds/:tenant_id", s.handleUpdateThresholds)
 
 	r.GET("/ui/:tenant_id", s.handleUI)
 
@@ -145,6 +146,11 @@ type EscalatedReviewRequest struct {
 	AccountantID  string `json:"accountant_id"  binding:"required"`
 }
 
+type UpdateThresholdsRequest struct {
+	AutoApproveMin float64 `json:"auto_approve_min" binding:"required"`
+	ReviewMin      float64 `json:"review_min"       binding:"required"`
+}
+
 func (s *Server) handleReview(c *gin.Context) {
 	var req ReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -242,6 +248,39 @@ func (s *Server) handleGetWorklist(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tenant_id": tenantID, "count": len(items), "items": items, "coa_entries": coaEntries})
+}
+
+func (s *Server) handleUpdateThresholds(c *gin.Context) {
+	tenantID := c.Param("tenant_id")
+	if tenantID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id required"})
+		return
+	}
+
+	var req UpdateThresholdsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.AutoApproveMin < 0 || req.AutoApproveMin > 1 || req.ReviewMin < 0 || req.ReviewMin > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "thresholds must be between 0 and 1"})
+		return
+	}
+	if req.AutoApproveMin < req.ReviewMin {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auto_approve_min must be >= review_min"})
+		return
+	}
+	if err := store.UpsertThresholds(c.Request.Context(), tenantID, req.AutoApproveMin, req.ReviewMin); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tenant_id":        tenantID,
+		"auto_approve_min": req.AutoApproveMin,
+		"review_min":       req.ReviewMin,
+		"updated_at":       time.Now().UTC(),
+	})
 }
 
 func (s *Server) handleUI(c *gin.Context) {
