@@ -1,0 +1,99 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: reap
+      POSTGRES_PASSWORD: reap
+      POSTGRES_DB: cfo_agent
+    volumes:
+      - cfo_db_data:/var/lib/postgresql/data
+      - ./migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reap -d cfo_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: temporal-db
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.37.2
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8081:8080"
+
+  api:
+    image: golang:1.25
+    working_dir: /app
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      POSTGRES_DSN: postgres://reap:reap@db:5432/cfo_agent?sslmode=disable
+      TEMPORAL_ADDRESS: temporal:7233
+      SERVER_PORT: ":8080"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: ["go", "run", "./cmd/api"]
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  worker:
+    image: golang:1.25
+    working_dir: /app
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      POSTGRES_DSN: postgres://reap:reap@db:5432/cfo_agent?sslmode=disable
+      TEMPORAL_ADDRESS: temporal:7233
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: ["go", "run", "./cmd/worker"]
+    restart: unless-stopped
+
+volumes:
+  cfo_db_data:
+  temporal_db_data:
