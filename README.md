@@ -36,6 +36,19 @@ The below examples shows that the system moves to auto approve when the confiden
 
 ![Confidence For Auto Tag](resources/confidence_for_autotag.png)
 
+Temporal visibility:
+
+<table>
+  <tr>
+    <td><img src="resources/temporal.png" alt="Temporal Workflow List" width="100%" /></td>
+    <td><img src="resources/temporal_deep.png" alt="Temporal Workflow Detail" width="100%" /></td>
+  </tr>
+  <tr>
+    <td align="center">Workflow list view</td>
+    <td align="center">Workflow execution detail</td>
+  </tr>
+</table>
+
 ## Architecture decisions
 
 ### Why Temporal
