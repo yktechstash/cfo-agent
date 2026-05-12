@@ -31,7 +31,7 @@ Typical flows:
 ![Learning Loop](resources/leaning_loop.gif)
 
 Confidence examples:
-
+The below examples shows that the system moves to auto approve when the confidence is high enough ( set by the user per tenant).
 ![Auto Tagged Confidence](resources/auto_tagged_confidence.png)
 
 ![Confidence For Auto Tag](resources/confidence_for_autotag.png)
@@ -63,6 +63,28 @@ INIT → ENRICHING → TAGGING → AUTO_APPROVE | IN_REVIEW | ESCALATED → SUCC
 - `ESCALATED`: low-confidence or exception path requiring explicit resolution
 - `SUCCESS`: final resolved state after approval, override, or escalated resolution
 
+### Local model strategy
+
+For local and test runs, the LLM provider is configured through the `factory pattern` and defaults to a local OpenAI-compatible model endpoint (`llm:8080` inside Docker network / mapped host port). This allows end-to-end testing without relying on hosted APIs while preserving the same call contract used by the tagging activity.
+
+Code path:
+- provider selection: [client.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/llm/client.go)
+- prompt + parse loop: [tag.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/activity/tag.go)
+- local model wiring: [docker-compose.yml](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/docker-compose.yml)
+
+### RAG pipeline
+
+RAG is used as retrieval context for tagging, not as a final decision-maker. `PostgreSQL` is the primary application store, and `pgvector` in `PostgreSQL` is used to store and retrieve historical examples from `txn_vectors`. The workflow enriches each transaction with nearest historical examples scoped by tenant, then injects that context into the tagging prompt.
+
+- retrieval query is vector similarity search in `pgvector`
+- retrieval is tenant-scoped (`tenant_id` isolation)
+- learning loop writes back confirmed examples into `txn_vectors`
+
+Code path:
+- retrieve neighbours during enrichment: [enrich.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/activity/enrich.go)
+- embedding + vector query/upsert: [postgres.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/store/postgres.go)
+- feedback writeback loop: [learning_loop.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/activity/learning_loop.go)
+
 ### Confidence routing
 
 Routing is deterministic after tagging. The LLM proposes a code and confidence; the router decides the next path.
@@ -73,7 +95,7 @@ Routing is deterministic after tagging. The LLM proposes a code and confidence; 
 <  review_min                       → ESCALATED
 ```
 
-Thresholds are stored in `confidence_thresholds` and support per-tenant overrides with a global fallback. They are runtime configuration, not hardcoded constants.
+Thresholds are stored in the `confidence_thresholds` table in `PostgreSQL` and support per-tenant overrides with a global fallback. They are runtime configuration, not hardcoded constants.
 
 Code path:
 - runtime fetch: [tagging.go](file:///Users/bytedance/go/src/github.com/reap-cfo-agent/internal/workflow/tagging.go)
